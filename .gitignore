@@ -1,3 +1,8 @@
+#Custom additions - feel free to edit
+praw.ini
+notes.txt
+test.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

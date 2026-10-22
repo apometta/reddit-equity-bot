@@ -1,5 +1,6 @@
-import praw
+import praw, poker
 from errors import ErrorCode, RangeInputError
+from poker import get_equity
 
 #Takes string and returns list consisting of all substrings within curly braces {}
 #Does NOT check for the validity of said substrings
@@ -45,12 +46,34 @@ def get_ranges(comment_body):
         raise RangeInputError(ErrorCode.TOO_FEW_PLAYERS)
     return (ranges, board, dead)
 
+def check_ranges(ranges, board, dead):
+    pass
+
 
 reddit = praw.Reddit("equity_bot")
 print("Logged in.")
 
 for item in reddit.inbox.stream(skip_existing=True):
-    print(f"Received: {item}")
+    try:
+        ranges, board, dead = get_ranges(item.body)
+        check_ranges(ranges, board, dead)
+        results = get_equity(ranges, board, dead)
+        best_equity = max(results)
 
-    item.reply("Hello!")
+        reply_message_lines = ["**Range** | **Equity**"]
+        for i in range(len(ranges)):
+            range_str, equity_result = ranges[i], results[i]
+            if len(range_str) > 150: range_str = range_str[:150] + "..."
+
+            if equity_result == best_equity:
+                range_str = "**" + range_str + "**" #bold the winner
+                equity_result = "**" + str(equity_result) + "**"
+            else:
+                equity_result = str(equity_result)
+            reply_message_lines.append(range_str + " | " + equity_result)
+
+        item.reply("\n".join(reply_message_lines))
+    except RangeInputError as e:
+        item.reply(str(e))
+
     item.mark_read()

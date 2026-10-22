@@ -1,6 +1,6 @@
 from enum import Enum, auto
 
-class ErrorCode(enum):
+class ErrorCode(Enum):
     INVALID_RANGE = auto()
     INVALID_BOARD = auto()
     INVALID_DEAD = auto()
@@ -8,7 +8,7 @@ class ErrorCode(enum):
     TOO_FEW_PLAYERS = auto()
     CARD_CONFLICT = auto()
 
-class RangeInputError(InputError):
+class RangeInputError(ValueError):
     def __init__(self, code, offending_range = ""):
         self.code = code
         self.offending_range = offending_range
