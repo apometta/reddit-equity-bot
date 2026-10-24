@@ -10,8 +10,8 @@ def get_equity(ranges, board, dead):
 
 	eq.start(
 		hand_ranges = [omp.CardRange(range) for range in ranges],
-		board_cards = omp.CardRange(board),
-		dead_cards = omp.CardRange(dead),
+		board_cards = omp.CardRange.getCardMask(board),
+		dead_cards = omp.CardRange.getCardMask(dead),
 		enumerate_all = False,
 		stdev_target = 0.0025
 	)
