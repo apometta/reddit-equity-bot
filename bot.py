@@ -5,6 +5,24 @@ from poker import get_equity
 CARDS = set(['2', '3', '4', '5', '6', '7', '8', '9', 't', 'j', 'q', 'k', 'a'])
 SUITS = set(['s', 'd', 'h', 'c'])
 
+#Prunes all whitespace, and anything not in between {}
+#Nested brackets are completely ignored; when one '}' is seen, pruning resumes
+def initial_prune(comment_body):
+    pruned = []
+    within_brackets = False
+
+    for c in comment_body:
+        if not within_brackets:
+            if c == '{':
+                within_brackets = True
+                pruned.append(c)
+        else:
+            if not c.isspace():
+                pruned.append(c)
+            within_brackets = c != '}'
+
+    return "".join(pruned)
+
 #Takes string and returns list consisting of all substrings within curly braces {}
 #Does NOT check for the validity of said substrings
 def get_ranges(comment_body):
