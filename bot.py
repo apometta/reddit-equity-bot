@@ -94,8 +94,8 @@ def check_range(range):
     return True
 
 #Returns the set of all cards (as length-2 strings) found IF the operation is successful, 
-#throws error if not.
-def check_board_dead(range, board = True, used = set()):
+#throws error if not.  #board is True for board checking, False for dead card checking
+def check_board_dead(range, board, used = set()):
     i, n = 0, len(range)
     curr = set()
 
@@ -111,7 +111,11 @@ def check_board_dead(range, board = True, used = set()):
     return curr
 
 def check_ranges(ranges, board, dead):
-    pass #implement manually, no regex
+    for r in ranges:
+        if not check_range(r.lower()):
+            raise RangeInputError(ErrorCode.INVALID_RANGE, r)
+    board_cards = check_board_dead(board.lower(), True)
+    check_board_dead(dead.lower(), False, board_cards)
 
 
 reddit = praw.Reddit("equity_bot")
@@ -119,8 +123,9 @@ print("Logged in.")
 
 for item in reddit.inbox.stream(skip_existing=True):
     try:
-        ranges, board, dead = get_ranges(item.body.lower())
-        if len(ranges) == 0: continue
+        relevant_str = initial_prune(item.body)
+        ranges, board, dead = get_ranges(relevant_str)
+        if len(ranges) == 0: continue #no ranges, not a request
 
         check_ranges(ranges, board, dead)
         results, finished, stdev = get_equity(ranges, board, dead)
@@ -139,8 +144,13 @@ for item in reddit.inbox.stream(skip_existing=True):
             reply_message_lines.append(range_str + " | " + equity_result)
 
         item.reply("\n".join(reply_message_lines))
-        print("Processed message ")
+        print(f"Processed message {item.id}")
     except RangeInputError as e:
         item.reply(str(e))
+    except Exception as e:
+        try:
+            print(f"UNKNOWN EXCEPTION: {e} ON COMMENT {item.id}.  Aborting operation (not replying).")
+        except Exception as e:
+            print(f"ADDITIONAL EXCEPTION {e} encountered when accessing inbox item id.")
     finally:
         item.mark_read() #this happens even if continue is used above
