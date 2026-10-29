@@ -58,7 +58,7 @@ def get_ranges(comment_body):
             board += final_string
         elif parsing_dead:
             dead += final_string
-        else:
+        elif len(final_string) > 0: #ignore empty ranges
             ranges.append(final_string)
 
     if len(ranges) >= 7:
@@ -130,6 +130,8 @@ for item in reddit.inbox.stream(skip_existing=True):
         check_ranges(ranges, board, dead)
         results, finished, stdev = get_equity(ranges, board, dead)
         best_equity = max(results)
+        if best_equity == 0: #card conflict MUST have taken place during the equity calculation
+            raise RangeInputError(ErrorCode.CARD_CONFLICT)
 
         reply_message_lines = ["|**Range**|**Equity**|", "|-|-|"]
         for i in range(len(ranges)):
@@ -147,10 +149,10 @@ for item in reddit.inbox.stream(skip_existing=True):
         print(f"Processed message {item.id}")
     except RangeInputError as e:
         item.reply(str(e))
-    except Exception as e:
-        try:
-            print(f"UNKNOWN EXCEPTION: {e} ON COMMENT {item.id}.  Aborting operation (not replying).")
-        except Exception as e:
-            print(f"ADDITIONAL EXCEPTION {e} encountered when accessing inbox item id.")
+    # except Exception as e:
+    #     try:
+    #         print(f"UNKNOWN EXCEPTION: {e} ON COMMENT {item.id}.  Aborting operation (not replying).")
+    #     except Exception as e:
+    #         print(f"ADDITIONAL EXCEPTION {e} encountered when accessing inbox item id.")
     finally:
         item.mark_read() #this happens even if continue is used above
