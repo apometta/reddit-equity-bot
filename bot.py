@@ -1,158 +1,308 @@
-import praw, poker
-from errors import ErrorCode, RangeInputError
+"""Reddit equity bot: parse requests, validate them, calculate, and reply.
+
+    {AA,KK} {QQ} {b: As Kd Qc} {d: 2h 3s}
+
+Supported hand tokens: AA, QQ+, AK, AKo, ATs+, AsKh, and comma-separated
+unions of these. Neither percentage ranges nor dash ranges are supported.
+"""
+
+import logging
+import re
+from dataclasses import dataclass
+from functools import lru_cache
+from math import isfinite
+from typing import Callable
+
+from errors import ErrorCode, RangeInputError, shorten
 from poker import get_equity
 
-CARDS = set(['2', '3', '4', '5', '6', '7', '8', '9', 't', 'j', 'q', 'k', 'a'])
-SUITS = set(['s', 'd', 'h', 'c'])
+LOGGER = logging.getLogger(__name__)
+RANKS = "23456789TJQKA"
+SUITS = "shdc"
+MAX_PLAYERS = 6
+MAX_RANGE_CHARS = 1024
+MAX_REQUEST_SECTIONS = 32
 
-#Prunes all whitespace, and anything not in between {}
-#Nested brackets are completely ignored; when one '}' is seen, pruning resumes
-def initial_prune(comment_body):
-    pruned = []
-    within_brackets = False
-
-    for c in comment_body:
-        if not within_brackets:
-            if c == '{':
-                within_brackets = True
-                pruned.append(c)
-        else:
-            if not c.isspace():
-                pruned.append(c)
-            within_brackets = c != '}'
-
-    return "".join(pruned)
-
-#Takes string and returns list consisting of all substrings within curly braces {}
-#Does NOT check for the validity of said substrings
-def get_ranges(comment_body):
-    ranges = []
-    board = ""
-    dead = ""
-    comment_len = len(comment_body)
-    i = 0
-
-    while i < comment_len and len(ranges) < 7:
-        while i < comment_len and comment_body[i] != '{':
-            i += 1
-        if i >= comment_len - 1: break #stop if we are at or after last character
-        i += 1 #element after '{'
-
-        parsing_board = parsing_dead = False
-        if comment_body[i] in ('b', 'd'):
-            if comment_body[i] == 'b':
-                parsing_board = True
-            else:
-                parsing_dead = True
-
-            while i < comment_len and comment_body[i] not in (':', ' ', '\t'):
-                i += 1
-            while i < comment_len and comment_body[i] in (':', ' ', '\t'):
-                i += 1
-
-        start = i #start of board, dead, or range string not including {}, 'b', 'd', or any whitespace or colons
-        while i < comment_len and comment_body[i] != '}':
-            i += 1
-        final_string = comment_body[start:i]
-        if parsing_board:
-            board += final_string
-        elif parsing_dead:
-            dead += final_string
-        elif len(final_string) > 0: #ignore empty ranges
-            ranges.append(final_string)
-
-    if len(ranges) >= 7:
-        raise RangeInputError(ErrorCode.TOO_MANY_PLAYERS)
-    elif len(ranges) == 1:
-        raise RangeInputError(ErrorCode.TOO_FEW_PLAYERS)
-    return (ranges, board, dead)
-
-#Returns True if range is valid, False if not.  Assumes whitespace is removed and all text lowercase.
-#- notation is NOT supported by the library.  Does NOT work for board or dead cards.
-def check_range(range):
-    i, n = 0, len(range)
-    while i < n:
-        if range[i] not in CARDS or i == n - 1: return False
-        i += 1 #guaranteed < n
-
-        if range[i] == range[i - 1]: #POCKET PAIR LOGIC HERE
-            i += 1
-            if i < n and range[i] == 'o': i += 1
-            if i < n and range[i] == '+': i += 1
-        elif range[i] in SUITS: #specific card combination
-            if i > n - 3 or range[i + 1] not in CARDS or range[i + 2] not in SUITS: return False
-            i += 3
-        elif range[i] in CARDS: #card combination
-            i += 1
-            if i < n and range[i] in ('o', 's'): i += 1
-            if i < n and range[i] == '+': i += 1
-        else: return False #unrecognized symbol
-
-        if i < n and range[i] != ',': return False
-        i += 1
-
-    return True
-
-#Returns the set of all cards (as length-2 strings) found IF the operation is successful, 
-#throws error if not.  #board is True for board checking, False for dead card checking
-def check_board_dead(range, board, used = set()):
-    i, n = 0, len(range)
-    curr = set()
-
-    while i < n:
-        if i >= n - 1 or range[i] not in CARDS or range[i + 1] not in SUITS: return False
-        card = range[i:i + 2]
-        i += 2
-
-        if card in used: raise RangeInputError(ErrorCode.CARD_CONFLICT)
-        curr.add(card)
-        if board and len(curr) > 5: raise RangeInputError(ErrorCode.INVALID_BOARD)
-
-    return curr
-
-def check_ranges(ranges, board, dead):
-    for r in ranges:
-        if not check_range(r.lower()):
-            raise RangeInputError(ErrorCode.INVALID_RANGE, r)
-    board_cards = check_board_dead(board.lower(), True)
-    check_board_dead(dead.lower(), False, board_cards)
+SPECIFIC_HAND = re.compile(r"[2-9TJQKA][shdc][2-9TJQKA][shdc]\Z")
+PAIR = re.compile(r"([2-9TJQKA])\1\+?\Z")
+NONPAIR = re.compile(r"([2-9TJQKA])([2-9TJQKA])([so])?\+?\Z")
+SECTION = re.compile(r"\s*([bd])\s*:\s*(.*?)\s*\Z", re.IGNORECASE | re.DOTALL)
 
 
-reddit = praw.Reddit("equity_bot")
-print("Logged in.")
+@dataclass(frozen=True)
+class EquityRequest:
+    ranges: tuple[str, ...]
+    board: str = ""
+    dead: str = ""
 
-for item in reddit.inbox.stream(skip_existing=True):
-    try:
-        relevant_str = initial_prune(item.body)
-        ranges, board, dead = get_ranges(relevant_str)
-        if len(ranges) == 0: continue #no ranges, not a request
 
-        check_ranges(ranges, board, dead)
-        results, finished, stdev = get_equity(ranges, board, dead)
-        best_equity = max(results)
-        if best_equity == 0: #card conflict MUST have taken place during the equity calculation
+def _compact(text: str) -> str:
+    return "".join(ch for ch in text if not ch.isspace())
+
+
+def _normalize_range(text: str) -> str:
+    # Ranks uppercase, suits / suitedness lowercase, e.g. "ahkh" -> "AhKh".
+    return "".join(ch.upper() if ch.lower() in "tjqka" else ch.lower()
+                   for ch in _compact(text))
+
+
+def _validate_range(value: str) -> frozenset[str]:
+    """Validate a range; return cards that *every* explicitly named hand uses.
+
+    Broad ranges like AA don't force any particular physical card, whereas
+    {AsAh,AsAd} forces As. The latter is useful for early conflict checks.
+    """
+    if not value or len(value) > MAX_RANGE_CHARS:
+        raise RangeInputError(ErrorCode.INVALID_RANGE, value)
+
+    forced_cards: set[str] | None = None
+    for token in value.split(","):
+        if not token:
+            raise RangeInputError(ErrorCode.INVALID_RANGE, value)
+
+        if SPECIFIC_HAND.fullmatch(token):
+            cards = {token[:2].lower(), token[2:].lower()}
+            if len(cards) != 2:
+                raise RangeInputError(ErrorCode.CARD_CONFLICT)
+            forced_cards = cards if forced_cards is None else forced_cards & cards
+            continue
+
+        if PAIR.fullmatch(token):
+            forced_cards = set()
+            continue
+
+        match = NONPAIR.fullmatch(token)
+        if match:
+            high, low = match.group(1), match.group(2)
+            if RANKS.index(high) > RANKS.index(low):
+                forced_cards = set()
+                continue
+
+        raise RangeInputError(ErrorCode.INVALID_RANGE, value)
+
+    return frozenset(forced_cards or ())
+
+
+def _parse_cards(value: str, *, is_board: bool) -> set[str]:
+    """Validate a concatenated sequence of cards and return unique cards."""
+    code = ErrorCode.INVALID_BOARD if is_board else ErrorCode.INVALID_DEAD
+    maximum = 5 if is_board else 52
+    if len(value) % 2 or len(value) // 2 > maximum:
+        raise RangeInputError(code, value)
+
+    result: set[str] = set()
+    for offset in range(0, len(value), 2):
+        card = value[offset:offset + 2]
+        if card[0] not in RANKS.lower() or card[1] not in SUITS:
+            raise RangeInputError(code, value)
+        if card in result:
             raise RangeInputError(ErrorCode.CARD_CONFLICT)
+        result.add(card)
+    return result
 
-        reply_message_lines = ["|**Range**|**Equity**|", "|-|-|"]
-        for i in range(len(ranges)):
-            range_str, equity_result = ranges[i], results[i]
-            if len(range_str) > 150: range_str = range_str[:150] + "..."
 
-            if equity_result == best_equity:
-                range_str = "**" + range_str + "**" #bold the winner
-                equity_result = "**" + str(equity_result) + "**"
+
+def _hand_masks(hand_range: str) -> set[int]:
+    """Expand validated stove notation into two-card masks for a sanity check.
+
+    This deliberately mirrors OMPEval's rank / suited / offsuit / plus rules.
+    It is not used to calculate equity, only to reject impossible deals.
+    """
+    def card_mask(rank: str, suit: str) -> int:
+        return 1 << (4 * RANKS.index(rank) + SUITS.index(suit))
+
+    combinations: set[int] = set()
+    for token in hand_range.split(","):
+        if SPECIFIC_HAND.fullmatch(token):
+            combinations.add(card_mask(token[0], token[1]) | card_mask(token[2], token[3]))
+            continue
+
+        pair = PAIR.fullmatch(token)
+        if pair:
+            first = RANKS.index(pair.group(1))
+            ranks = RANKS[first:] if token.endswith("+") else token[0]
+            for rank in ranks:
+                for i in range(4):
+                    for j in range(i + 1, 4):
+                        combinations.add(card_mask(rank, SUITS[i]) | card_mask(rank, SUITS[j]))
+            continue
+
+        match = NONPAIR.fullmatch(token)
+        assert match is not None  # _validate_range() already checked syntax.
+        high, low, suitedness = match.groups()
+        low_ranks = RANKS[RANKS.index(low):RANKS.index(high)] if token.endswith("+") else low
+        for second_rank in low_ranks:
+            for first_suit in SUITS:
+                for second_suit in SUITS:
+                    if suitedness == "s" and first_suit != second_suit:
+                        continue
+                    if suitedness == "o" and first_suit == second_suit:
+                        continue
+                    combinations.add(card_mask(high, first_suit) | card_mask(second_rank, second_suit))
+    return combinations
+
+
+def _check_possible_deal(request: EquityRequest, blocked: set[str]) -> None:
+    """Ensure at least one assignment exists without any duplicated cards."""
+    blocked_mask = 0
+    for card in blocked:
+        blocked_mask |= 1 << (4 * RANKS.index(card[0].upper()) + SUITS.index(card[1]))
+
+    choices = []
+    for hand_range in request.ranges:
+        hands = tuple(mask for mask in _hand_masks(hand_range) if not mask & blocked_mask)
+        if not hands:
+            raise RangeInputError(ErrorCode.NO_VALID_DEALS)
+        choices.append(hands)
+    choices.sort(key=len)
+
+    @lru_cache(maxsize=50_000)
+    def feasible(player: int, used: int) -> bool:
+        if player == len(choices):
+            return True
+        return any(not (hand & used) and feasible(player + 1, used | hand)
+                   for hand in choices[player])
+
+    if not feasible(0, blocked_mask):
+        raise RangeInputError(ErrorCode.NO_VALID_DEALS)
+
+
+def _validate_request(request: EquityRequest) -> None:
+    if len(request.ranges) < 2:
+        raise RangeInputError(ErrorCode.TOO_FEW_PLAYERS)
+    if len(request.ranges) > MAX_PLAYERS:
+        raise RangeInputError(ErrorCode.TOO_MANY_PLAYERS)
+
+    forced = [_validate_range(value) for value in request.ranges]
+    board = _parse_cards(request.board, is_board=True)
+    dead = _parse_cards(request.dead, is_board=False)
+    if board & dead:
+        raise RangeInputError(ErrorCode.CARD_CONFLICT)
+
+    used = board | dead
+    for cards in forced:
+        if used & cards:
+            raise RangeInputError(ErrorCode.CARD_CONFLICT)
+        used.update(cards)
+
+    _check_possible_deal(request, board | dead)
+
+
+def parse_request(body: str) -> EquityRequest | None:
+    """Extract and validate bracketed items; return None for non-requests.
+
+    Whitespace in braces is ignored; multiple b:/d: sections are combined.
+    Unbalanced or nested braces are errors rather than silently truncated.
+    """
+    if "{" not in body:
+        return None
+
+    ranges: list[str] = []
+    board_parts: list[str] = []
+    dead_parts: list[str] = []
+    cursor = 0
+    sections = 0
+
+    while (opening := body.find("{", cursor)) != -1:
+        closing = body.find("}", opening + 1)
+        if closing == -1 or "{" in body[opening + 1:closing]:
+            raise RangeInputError(ErrorCode.MALFORMED_REQUEST)
+        sections += 1
+        if sections > MAX_REQUEST_SECTIONS:
+            raise RangeInputError(ErrorCode.MALFORMED_REQUEST)
+
+        content = body[opening + 1:closing]
+        section = SECTION.fullmatch(content)
+        if section:
+            value = _compact(section.group(2)).lower()
+            if section.group(1).lower() == "b":
+                board_parts.append(value)
             else:
-                equity_result = str(equity_result)
-            reply_message_lines.append(range_str + " | " + equity_result)
+                dead_parts.append(value)
+        else:
+            ranges.append(_normalize_range(content))
+            if len(ranges) > MAX_PLAYERS:
+                raise RangeInputError(ErrorCode.TOO_MANY_PLAYERS)
+        cursor = closing + 1
 
-        item.reply("\n".join(reply_message_lines))
-        print(f"Processed message {item.id}")
-    except RangeInputError as e:
-        item.reply(str(e))
-    # except Exception as e:
-    #     try:
-    #         print(f"UNKNOWN EXCEPTION: {e} ON COMMENT {item.id}.  Aborting operation (not replying).")
-    #     except Exception as e:
-    #         print(f"ADDITIONAL EXCEPTION {e} encountered when accessing inbox item id.")
-    finally:
-        item.mark_read() #this happens even if continue is used above
+    # A board-only/dead-only comment is not an equity request.
+    if not ranges:
+        return None
+
+    request = EquityRequest(tuple(ranges), "".join(board_parts), "".join(dead_parts))
+    _validate_request(request)
+    return request
+
+
+def format_reply(request: EquityRequest, equities: list[float]) -> str:
+    """Produce a complete and consistently escaped Reddit Markdown table."""
+    if len(equities) != len(request.ranges):
+        raise ValueError("Wrong number of equity results")
+    if not equities or any(not isfinite(value) or not (0 <= value <= 1) for value in equities):
+        raise ValueError("Invalid equity results")
+    if sum(equities) <= 0:
+        raise RangeInputError(ErrorCode.NO_VALID_DEALS)
+
+    # Compare displayed values; tiny simulation differences that round to
+    # the same percentage should not produce inconsistent visual highlighting.
+    percentages = [f"{value * 100:.2f}" for value in equities]
+    best_display = max(float(value) for value in percentages)
+    lines = ["| Range | Equity |", "|:--|--:|"]
+    for hand_range, percentage in zip(request.ranges, percentages):
+        display_range = shorten(hand_range)
+        display_equity = f"{percentage}%"
+        if float(percentage) == best_display:
+            display_range = f"**{display_range}**"
+            display_equity = f"**{display_equity}**"
+        lines.append(f"| {display_range} | {display_equity} |")
+    return "\n".join(lines)
+
+
+def make_reply(body: str, evaluator: Callable = get_equity) -> str | None:
+    """Pure processing entrypoint, useful for local testing without PRAW."""
+    request = parse_request(body)
+    if request is None:
+        return None
+    equities, _finished, _stdev = evaluator(request.ranges, request.board, request.dead)
+    return format_reply(request, equities)
+
+
+def process_item(item, evaluator: Callable = get_equity) -> None:
+    """Acknowledge only requests that were successfully handled.
+
+    Expected input errors get a Reddit reply. Unexpected/API errors propagate,
+    leaving the message unread and making the failure visible to the caller.
+    """
+    try:
+        reply = make_reply(item.body, evaluator=evaluator)
+    except RangeInputError as exc:
+        reply = str(exc)
+
+    if reply is not None:
+        item.reply(reply)
+    item.mark_read()
+
+
+def main() -> None:
+    import praw
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    reddit = praw.Reddit("equity_bot")
+    LOGGER.info("Connected to Reddit as u/%s", reddit.user.me())
+
+    # Handle unprocessed requests from earlier runs before listening for new ones.
+    for item in reddit.inbox.unread(limit=None):
+        try:
+            process_item(item)
+        except Exception:
+            LOGGER.exception("Could not process unread inbox item %s", getattr(item, "id", "unknown"))
+
+    for item in reddit.inbox.stream(skip_existing=True):
+        try:
+            process_item(item)
+        except Exception:
+            LOGGER.exception("Could not process streamed inbox item %s", getattr(item, "id", "unknown"))
+
+
+if __name__ == "__main__":
+    main()

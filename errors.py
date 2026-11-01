@@ -1,4 +1,7 @@
+"""User-facing errors for malformed equity requests."""
+
 from enum import Enum, auto
+
 
 class ErrorCode(Enum):
     INVALID_RANGE = auto()
@@ -7,26 +10,34 @@ class ErrorCode(Enum):
     TOO_MANY_PLAYERS = auto()
     TOO_FEW_PLAYERS = auto()
     CARD_CONFLICT = auto()
+    MALFORMED_REQUEST = auto()
+    NO_VALID_DEALS = auto()
+
+
+MAX_DISPLAY_LENGTH = 150
+
+
+def shorten(value: str, length: int = MAX_DISPLAY_LENGTH) -> str:
+    """Limit potentially lengthy user-provided text in Reddit replies."""
+    return value if len(value) <= length else value[:length] + "..."
+
 
 class RangeInputError(ValueError):
-    def __init__(self, code, offending_range = ""):
+    def __init__(self, code: ErrorCode, offending_range: str = "") -> None:
         self.code = code
-        self.offending_range = offending_range
-        if len(self.offending_range) > 150:
-            self.offending_range = self.offending_range[:150] + "..."
+        self.offending_range = shorten(offending_range)
 
-        match code:
-            case ErrorCode.INVALID_RANGE:
-                message = f"Range {self.offending_range} is invalid: please check formatting."
-            case ErrorCode.INVALID_BOARD:
-                message = f"Board {self.offending_range} is invalid: please check formatting."
-            case ErrorCode.INVALID_DEAD:
-                message = f"Dead cards {self.offending_range} is invalid: please check formatting."
-            case ErrorCode.TOO_MANY_PLAYERS:
-                message = "Too many ranges.  Maximum supported ranges: 6."
-            case ErrorCode.TOO_FEW_PLAYERS:
-                message = "Too few ranges.  Minimum supported ranges: 2."
-            case ErrorCode.CARD_CONFLICT:
-                message = "Card conflict: at least one card is necessarily in two separate ranges and/or dead/board cards."
-
-        super().__init__(message)
+        messages = {
+            ErrorCode.INVALID_RANGE: f"Invalid hand range: `{self.offending_range}`.",
+            ErrorCode.INVALID_BOARD: f"Invalid board cards: `{self.offending_range}`.",
+            ErrorCode.INVALID_DEAD: f"Invalid dead cards: `{self.offending_range}`.",
+            ErrorCode.TOO_MANY_PLAYERS: "Too many hand ranges. The maximum is 6 players.",
+            ErrorCode.TOO_FEW_PLAYERS: "Too few hand ranges. Supply 2 to 6 players.",
+            ErrorCode.CARD_CONFLICT: "Card conflict: the same physical card is required more than once.",
+            ErrorCode.MALFORMED_REQUEST: "Malformed request: check the curly braces and `b:` / `d:` sections.",
+            ErrorCode.NO_VALID_DEALS: (
+                "No valid equity result was produced. Check whether the ranges, board, "
+                "and dead cards permit any non-overlapping hands."
+            ),
+        }
+        super().__init__(messages[code])
