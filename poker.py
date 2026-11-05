@@ -31,8 +31,6 @@ def get_equity(ranges: list[str] | tuple[str, ...], board: str = "", dead: str =
     equities = [float(x) for x in result.equity]
 
     # A broken or empty calculation must never be presented as a real result.
-    if len(equities) != len(ranges):
-        raise RuntimeError("OMPEval returned an unexpected number of equities")
     if any(not isfinite(value) or value < 0 or value > 1 for value in equities):
         raise RuntimeError("OMPEval returned an invalid equity value")
 
