@@ -1,7 +1,7 @@
-"""Reddit poker equity bot.
+"""
+A Reddit poker bot, written by Andrew H. Pometta, for Texas Holdem equity analysis.  See README.md or USAGE.md for details.  A python port of OMPEval is used for the evaluation, and PRAW for the Reddit interfacing.
 
-Examples: {AA,AKs} {kk} {b: As Kd Qc} {d: 2h}
-Only checks the syntax of range strings; OMPEval handles the cards.
+This is the main module, with the main method.  Mostly responsible for handling comment/message aggregation and parsing.
 """
 
 import logging
@@ -42,25 +42,25 @@ def _cumulative_combos(ranking) -> tuple[int, ...]:
 
 CUTOFFS = _cumulative_combos(range_percentages)
 
-
+#A class representing an individual request for the bot.
 @dataclass(frozen=True)
 class EquityRequest:
     ranges: tuple[str, ...]
     board: str = ""
     dead: str = ""
 
-
+#Remove all whitespace
 def _compact(text: str) -> str:
     return "".join(text.split())
 
-
+#Removes excess commas and whitespace.  Redundant commas are allowed in equity requests.
 def _clean_range(text: str) -> str:
-    # Remove irrelevant commas and whitespace, but preserve the author's case.
     return ",".join(token for token in _compact(text).split(",") if token)
 
-
+#This function ensures a range request is of valid syntax, and raises the appropriate error 
+#if not.  It does not do any sort of logical checking, e.g. ensuring that a card on the board 
+#is not also a dead card.  Only syntax is checked.
 def _validate_range(value: str) -> None:
-    """Check notation only. No card overlap, blocker, or deal checking."""
     if not value or len(value) > MAX_RANGE_CHARS:
         raise RangeInputError(ErrorCode.INVALID_RANGE, value)
     if value.lower() in ("random", "atc"):
@@ -78,9 +78,8 @@ def _validate_range(value: str) -> None:
             continue
         raise RangeInputError(ErrorCode.INVALID_RANGE, value)
 
-
+#Primary parsing function: forms an EquityRequest from the comment body by finding ranges, board and dead cards.  This function also raises errors related to number of players.
 def parse_request(body: str) -> EquityRequest | None:
-    """Extract range/board/dead sections without validating physical cards."""
     if "{" not in body:
         return None
 
@@ -116,11 +115,13 @@ def parse_request(body: str) -> EquityRequest | None:
         raise RangeInputError(ErrorCode.TOO_FEW_PLAYERS)
     return EquityRequest(tuple(ranges), "".join(board), "".join(dead))
 
-
+#
 def format_reply(request: EquityRequest, equities: list[float]) -> str:
     if any(not isfinite(value) or not 0 <= value <= 1 for value in equities):
         raise ValueError("Unexpected equity results from OMPEval")
-    # OMPEval reports all zeroes when no valid hands can be evaluated.
+    #If all equities are 0, it means OMPEval could not complete the equity calculation, which 
+    #this program assumes means that there is some conflict within the ranges (e.g. one range 
+    #is "AsKh" but then the board is "b: AsJd2c").
     if max(equities) == 0:
         raise RangeInputError(ErrorCode.CARD_CONFLICT)
 
@@ -133,9 +134,8 @@ def format_reply(request: EquityRequest, equities: list[float]) -> str:
         lines.append(f"| {label} | {percentage} |")
     return "\n".join(lines)
 
-
+#Handles keyword exceptions and percentage range inputs by converting them to traditional range strings.
 def _expand_range(value: str) -> str:
-    """Convert a percentage to the largest available range not exceeding it."""
     if value.lower() in ("random", "atc"):
         return "random"
     if not PERCENT.fullmatch(value):
@@ -147,9 +147,8 @@ def _expand_range(value: str) -> str:
     selected = range_percentages[index][2]
     return "random" if selected.lower() in ("random", "atc") else selected
 
-
+#A function for replying to an item, but disregards nonrequests.  Can be tested locally without connecting to Reddit.
 def make_reply(body: str, evaluator: Callable = get_equity) -> str | None:
-    """Process text locally without importing PRAW or connecting to Reddit."""
     request = parse_request(body)
     if request is None:
         return None
@@ -157,7 +156,7 @@ def make_reply(body: str, evaluator: Callable = get_equity) -> str | None:
     equities, _finished, _stdev = evaluator(evaluator_ranges, request.board, request.dead)
     return format_reply(request, equities)
 
-
+#A function for handling an individual reply, requires connection to Reddit.
 def process_item(item, evaluator: Callable = get_equity) -> None:
     try:
         reply = make_reply(item.body, evaluator)
@@ -168,7 +167,7 @@ def process_item(item, evaluator: Callable = get_equity) -> None:
         item.reply(reply)
     item.mark_read()
 
-
+#Connects to Reddit and sets up continuous stream of inbox items to reply to.
 def main() -> None:
     import praw
 

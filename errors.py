@@ -1,8 +1,16 @@
-"""User-facing errors for malformed equity requests."""
-
 from enum import Enum, auto
 
-
+"""
+Error codes are as follows:
+  INVALID_RANGE: A range string was formatted in an invalid manner.  Unsupported characters, dash notation, etc.  Examples: {banana}, {AsKdJc}, {JJ+ AdJd}}
+  INVALID_BOARD: Incorrectly formatted board cards.  Board does not support the same range strings ranges do.
+  INVALID_DEAD: Incorrectly formatted dead cards.  Dead does not support the same range strings ranges do.
+  TOO_MANY_PLAYERS: More than 6 ranges inputted.
+  TOO_FEW_PLAYERS: Exactly 1 range inputted.  0 ranges inputted does not give this error; the bot simply ignores the request.
+  CARD_CONFLICT: A logical error, in which a card is required to be in more than one place for the given situation.  Example: {10%} {AQs+,88+} {AdJh} {b: AsJc9h}
+  MALFORMED_REQUEST: Used for when the user gets something wrong related to brackets {}.
+  NO_VALID_DEALS: Currently unused.
+"""
 class ErrorCode(Enum):
     INVALID_RANGE = auto()
     INVALID_BOARD = auto()
@@ -16,12 +24,11 @@ class ErrorCode(Enum):
 
 MAX_DISPLAY_LENGTH = 150
 
-
+#Shortens a range string to a maximum limit for ease of output.
 def shorten(value: str, length: int = MAX_DISPLAY_LENGTH) -> str:
-    """Limit potentially lengthy user-provided text in Reddit replies."""
     return value if len(value) <= length else value[:length] + "..."
 
-
+#This wrapper class around ValueError also generates the reply the bot uses to the user who made the error-generating request.
 class RangeInputError(ValueError):
     def __init__(self, code: ErrorCode, offending_range: str = "") -> None:
         self.code = code
