@@ -5,6 +5,7 @@ Only checks the syntax of range strings; OMPEval handles the cards.
 """
 
 import logging
+from bisect import bisect_right
 import re
 from dataclasses import dataclass
 from math import isfinite
@@ -12,6 +13,7 @@ from typing import Callable
 
 from errors import ErrorCode, RangeInputError, shorten
 from poker import get_equity
+from percentage_strings import range_percentages
 
 LOGGER = logging.getLogger(__name__)
 MAX_PLAYERS = 6
@@ -22,6 +24,23 @@ EXACT_HAND = re.compile(r"[2-9TJQKA][shdc][2-9TJQKA][shdc]", re.I)
 PAIR = re.compile(r"([2-9TJQKA])\1o?\+?", re.I)
 OTHER_HAND = re.compile(r"([2-9TJQKA])([2-9TJQKA])([so])?\+?", re.I)
 SECTION = re.compile(r"\s*([bd])\s*:\s*(.*?)\s*\Z", re.I | re.S)
+PERCENT = re.compile(r"(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)%\Z")
+
+
+def _cumulative_combos(ranking) -> tuple[int, ...]:
+    # Use exact combo counts: the stored percentages are rounded for display.
+    total = 0
+    counts = []
+    for hand, _percentage, _range in ranking:
+        if hand.upper() == "ATC":
+            total = 1326
+        else:
+            total += 6 if len(hand) == 2 else (4 if hand.lower().endswith("s") else 12)
+        counts.append(total)
+    return tuple(counts)
+
+
+CUTOFFS = _cumulative_combos(range_percentages)
 
 
 @dataclass(frozen=True)
@@ -46,6 +65,10 @@ def _validate_range(value: str) -> None:
         raise RangeInputError(ErrorCode.INVALID_RANGE, value)
     if value.lower() in ("random", "atc"):
         return
+    if PERCENT.fullmatch(value):
+        if 0 < float(value[:-1]) <= 100:
+            return
+        raise RangeInputError(ErrorCode.INVALID_RANGE, value)
 
     for token in value.split(","):
         if EXACT_HAND.fullmatch(token) or PAIR.fullmatch(token):
@@ -94,3 +117,77 @@ def parse_request(body: str) -> EquityRequest | None:
     return EquityRequest(tuple(ranges), "".join(board), "".join(dead))
 
 
+def format_reply(request: EquityRequest, equities: list[float]) -> str:
+    if any(not isfinite(value) or not 0 <= value <= 1 for value in equities):
+        raise ValueError("Unexpected equity results from OMPEval")
+    # OMPEval reports all zeroes when no valid hands can be evaluated.
+    if max(equities) == 0:
+        raise RangeInputError(ErrorCode.CARD_CONFLICT)
+
+    winner = max(equities)
+    lines = ["| Range | Equity |", "|:--|--:|"]
+    for hand_range, equity in zip(request.ranges, equities):
+        label, percentage = shorten(hand_range), f"{equity:.2%}"
+        if equity == winner:
+            label, percentage = f"**{label}**", f"**{percentage}**"
+        lines.append(f"| {label} | {percentage} |")
+    return "\n".join(lines)
+
+
+def _expand_range(value: str) -> str:
+    """Convert a percentage to the largest available range not exceeding it."""
+    if value.lower() in ("random", "atc"):
+        return "random"
+    if not PERCENT.fullmatch(value):
+        return value
+
+    index = bisect_right(CUTOFFS, float(value[:-1]) * 1326 / 100) - 1
+    if index < 0:  # Too small to contain even the first ranked hand.
+        raise RangeInputError(ErrorCode.INVALID_RANGE, value)
+    selected = range_percentages[index][2]
+    return "random" if selected.lower() in ("random", "atc") else selected
+
+
+def make_reply(body: str, evaluator: Callable = get_equity) -> str | None:
+    """Process text locally without importing PRAW or connecting to Reddit."""
+    request = parse_request(body)
+    if request is None:
+        return None
+    evaluator_ranges = tuple(_expand_range(value) for value in request.ranges)
+    equities, _finished, _stdev = evaluator(evaluator_ranges, request.board, request.dead)
+    return format_reply(request, equities)
+
+
+def process_item(item, evaluator: Callable = get_equity) -> None:
+    try:
+        reply = make_reply(item.body, evaluator)
+    except RangeInputError as exc:
+        reply = str(exc)
+
+    if reply is not None:
+        item.reply(reply)
+    item.mark_read()
+
+
+def main() -> None:
+    import praw
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    reddit = praw.Reddit("equity_bot")
+    LOGGER.info("Connected to Reddit as u/%s", reddit.user.me())
+
+    #do not process queries made while bot was offline
+    # for item in reddit.inbox.unread(limit=None):
+    #     try:
+    #         process_item(item)
+    #     except Exception:
+    #         LOGGER.exception("Could not process inbox item %s", getattr(item, "id", "unknown"))
+    for item in reddit.inbox.stream(skip_existing=True):
+        try:
+            process_item(item)
+        except Exception:
+            LOGGER.exception("Could not process inbox item %s", getattr(item, "id", "unknown"))
+
+
+if __name__ == "__main__":
+    main()
