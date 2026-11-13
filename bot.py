@@ -142,6 +142,13 @@ def format_reply(request: EquityRequest, equities: list[float]) -> str:
     lines = ["| Range | Equity |", "|:--|--:|"]
     for hand_range, equity in zip(request.ranges, equities):
         label, percentage = shorten(hand_range), f"{equity:.2%}"
+        if PERCENT.fullmatch(hand_range):
+            # Display the selected range, shortened to 150 characters when needed.
+            # This changes only the reply, not the input sent to OMPEval.
+            index = bisect_right(CUTOFFS, float(hand_range[:-1]) * 1326 / 100) - 1
+            if index < 0:
+                raise RangeInputError(ErrorCode.INVALID_RANGE, hand_range)
+            label = f"{hand_range} ({shorten(range_percentages[index][2])})"
         if equity == winner:
             label, percentage = f"**{label}**", f"**{percentage}**"
         lines.append(f"| {label} | {percentage} |")
