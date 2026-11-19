@@ -1,0 +1,10 @@
+; Make your own Reddit application here: https://reddit.com/prefs/apps/
+; Also MAKE SURE YOU REGISTER YOUR BOT WITH DEVVIT OR IT WILL BE SUSPENDED
+;
+; For a Reddit "script" app/account configuration:
+[equity_bot]
+client_id=YOUR_CLIENT_ID
+client_secret=YOUR_CLIENT_SECRET
+username=YOUR_BOT_ACCOUNT_USERNAME
+password=YOUR_BOT_ACCOUNT_PASSWORD
+user_agent=PUT YOUR DESCRIPTION HERE
