@@ -1,8 +1,8 @@
 from math import isfinite
 
-
-TIME_LIMIT_SECONDS = 5.0
-STANDARD_ERROR_TARGET = 0.0025
+#Configurable settings for the equity analysis.
+TIME_LIMIT_SECONDS = 5.0 #Time limit on how long the equity takes
+STANDARD_ERROR_TARGET = 0.0025 #Target standard error
 
 #Primary equity calculation function.  Takes in ranges, board and dead, returns appropriate equity calculation.
 def get_equity(ranges: list[str] | tuple[str, ...], board: str = "", dead: str = "") -> tuple[list[float], bool, float]:

@@ -1,7 +1,4 @@
-"""Reddit connection, inbox processing, and rotating logs for the equity bot.
-
-All request parsing, equity computation, and reply formatting live in parser.py.
-"""
+"""This file is responsible for handling the connection to Reddit and maintenance of the bot itself.  All comment bodies are piped to parser.py."""
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -14,7 +11,7 @@ from poker import get_equity
 
 LOGGER = logging.getLogger(__name__)
 
-# Size-based log rotation, configurable without changing handler logic.
+# Size-based log rotation
 LOG_FILE_NAME = "bot.log"
 LOG_FILE_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB per file
 LOG_FILE_BACKUP_COUNT = 5
@@ -66,7 +63,7 @@ def configure_logging() -> None:
     )
 
 
-# Connect to Reddit and process only new inbox items, not past unread items.
+# Connect to Reddit and process only new inbox items.  Does not process items from when the bot was offline.
 def main() -> None:
     configure_logging()
     try:
